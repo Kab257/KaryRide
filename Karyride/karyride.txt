@@ -1,0 +1,3691 @@
+Absolutely. Since you said **FULL**, I’m going to treat this as the **master theory/application-logic specification for KaryRide V1** — not just a feature list.
+
+I’ll cover the system from **platform administration → companies → employees → drivers → vehicles → pricing → clients → booking → dispatch → GPS → trip → payment → invoice → reviews → restrictions → documents → security → language → notifications → reporting → database rules → application rules → edge cases → future expansion**.
+
+The existing database remains the foundation. 
+
+# KaryRide V1 — FULL APPLICATION LOGIC SPECIFICATION
+
+## 1. SYSTEM CONCEPT
+
+KaryRide is a **multi-company transport platform**.
+
+It is not one taxi company.
+
+The platform operator controls the ecosystem, while independent transport companies operate inside KaryRide.
+
+```text
+                         KARYRIDE PLATFORM
+                                │
+             ┌──────────────────┼──────────────────┐
+             │                  │                  │
+        SUPER ADMIN         COMPANIES            CLIENTS
+                                │
+                    ┌───────────┼───────────┐
+                    │           │           │
+                  STAFF       DRIVERS     VEHICLES
+                                │           │
+                                └─────┬─────┘
+                                      │
+                                  CATEGORIES
+                                      │
+                                   PRICING
+                                      │
+                                    RIDES
+                                      │
+                              PAYMENT / INVOICE
+                                      │
+                                   REVIEWS
+```
+
+The fundamental rule is:
+
+> **KaryRide owns the platform; companies operate transport services through it.**
+
+Companies don't control the entire platform.
+
+They control only their own operational data.
+
+---
+
+# 2. USER TYPES
+
+The database has six roles:
+
+```text
+superadmin
+company_owner
+company_manager
+company_employee
+driver
+client
+```
+
+The `users` table acts as the central authentication identity for all of them. 
+
+## 2.1 Super Admin
+
+The Super Admin is the **platform administrator**.
+
+Controls:
+
+* companies
+* users
+* company approval
+* company suspension
+* global bans
+* documents
+* global categories
+* system settings
+* platform commission
+* platform statistics
+* platform-wide monitoring
+
+The Super Admin is **not a transport company**.
+
+---
+
+# 3. COMPANY CREATION MODEL
+
+This is important because of your requirement:
+
+> **Companies are added/created by KaryRide administration.**
+
+The public doesn't freely create an operational company and immediately start using the platform.
+
+The workflow is:
+
+```text
+SUPER ADMIN
+     ↓
+Creates company
+     ↓
+Creates company owner account
+     ↓
+Provides credentials to owner
+     ↓
+Owner logs in
+     ↓
+Company completes/manages its operational information
+     ↓
+Super Admin controls approval/status
+```
+
+Therefore, `companies.owner_user_id` identifies the primary owner account. 
+
+---
+
+# 4. AUTHENTICATION LOGIC
+
+## Login
+
+A user enters:
+
+* phone or email
+* password
+
+PHP:
+
+1. validates input
+2. searches `users`
+3. verifies `password_hash`
+4. checks `is_active`
+5. checks global ban
+6. starts authenticated session
+7. loads role
+8. redirects to appropriate dashboard
+
+Example:
+
+```text
+superadmin        → /admin
+company_owner     → /company
+company_manager   → /company
+company_employee  → /company
+driver            → /driver
+client            → /client
+```
+
+## Global ban
+
+If:
+
+```text
+is_banned_globally = 1
+```
+
+the account cannot use KaryRide even if its company account is active.
+
+This is different from a company-specific restriction.
+
+---
+
+# 5. LANGUAGE SYSTEM
+
+KaryRide V1 supports:
+
+**Kirundi (`rn`)**
+
+and
+
+**English (`en`)**.
+
+The user's choice is stored in:
+
+```text
+users.preferred_language
+```
+
+The application should use translation keys rather than hardcoded interface text.
+
+Example conceptually:
+
+```text
+booking.request
+```
+
+resolves to:
+
+```text
+Kirundi → translated Kirundi text
+English → translated English text
+```
+
+Language affects:
+
+* navigation
+* buttons
+* forms
+* errors
+* booking messages
+* driver messages
+* invoices
+* notifications
+* dashboard labels
+* system messages
+
+It does **not** change database values such as:
+
+```text
+pending
+accepted
+completed
+```
+
+Those remain stable internal values.
+
+---
+
+# 6. COMPANY ISOLATION
+
+This is one of the most important KaryRide rules.
+
+Every company user must operate inside a company context.
+
+For example:
+
+```text
+Company A
+```
+
+must never see:
+
+```text
+Company B drivers
+Company B vehicles
+Company B rides
+Company B promotions
+Company B pricing
+Company B restrictions
+```
+
+except where the platform intentionally exposes public information.
+
+Every company-side query should effectively behave like:
+
+```sql
+WHERE company_id = CURRENT_COMPANY_ID
+```
+
+The application should **never trust a company_id sent by the browser**.
+
+It should obtain the company from the authenticated session/user relationship.
+
+---
+
+# 7. COMPANY OWNER
+
+The owner controls the company's operation.
+
+Main areas:
+
+```text
+Dashboard
+Drivers
+Vehicles
+Categories
+Pricing
+Promotions
+Rides
+Clients
+Restrictions
+Documents
+Company profile
+Reports
+Settings
+```
+
+The owner can:
+
+* manage drivers
+* assign vehicles
+* manage fleet
+* configure categories
+* configure prices
+* create promotions
+* monitor rides
+* restrict problematic clients
+* view company statistics
+
+The owner cannot:
+
+* modify another company
+* modify platform settings
+* globally ban users
+* approve companies
+* control KaryRide itself
+
+---
+
+# 8. COMPANY MANAGER / EMPLOYEE
+
+`company_staff` provides company-level membership and granular permissions. 
+
+Example:
+
+```text
+Manager
+    can_manage_drivers = true
+    can_manage_vehicles = true
+    can_edit_pricing = true
+    can_view_finances = true
+```
+
+Employee:
+
+```text
+Dispatcher
+    can_manage_drivers = false
+    can_assign_drivers = true
+    can_edit_pricing = false
+    can_view_finances = false
+```
+
+The application checks:
+
+```text
+Is user active?
+↓
+Does user belong to company?
+↓
+What role?
+↓
+What permission?
+↓
+Allow/deny action
+```
+
+---
+
+# 9. VEHICLE CATEGORIES
+
+KaryRide supports two types of categories.
+
+## Global category
+
+```text
+company_id = NULL
+```
+
+Example:
+
+```text
+Standard Taxi
+Moto
+VIP
+```
+
+These are available as platform-level categories.
+
+## Company category
+
+```text
+company_id = X
+```
+
+Example:
+
+```text
+Company A:
+Executive Taxi
+Family Van
+```
+
+Only Company A can manage its private category.
+
+The category also defines the broad vehicle type:
+
+```text
+car
+motorcycle
+minibus
+truck
+```
+
+
+
+---
+
+# 10. VEHICLES
+
+A company registers its physical fleet.
+
+Each vehicle has:
+
+* plate
+* brand
+* model
+* color
+* manufacture year
+* seating capacity
+* category
+* active state
+
+Example:
+
+```text
+Company A
+   │
+   ├── Toyota Corolla
+   │      └── Standard Taxi
+   │
+   ├── Toyota Prado
+   │      └── VIP
+   │
+   └── Bajaj Boxer
+          └── Moto
+```
+
+A vehicle belongs to exactly one company.
+
+A vehicle category must also be logically valid for that company/global platform.
+
+---
+
+# 11. DRIVER MANAGEMENT
+
+A driver has:
+
+```text
+users
+   ↓
+drivers
+```
+
+The `drivers` table contains operational driver information. 
+
+A driver has:
+
+* account
+* company
+* driving licence
+* national ID if applicable
+* current vehicle
+* availability
+* GPS coordinates
+* suspension state
+
+---
+
+# 12. DRIVER STATUS
+
+Driver status:
+
+```text
+offline
+available
+busy
+```
+
+### Offline
+
+Driver isn't currently accepting rides.
+
+### Available
+
+Driver is eligible for new ride requests.
+
+### Busy
+
+Driver is currently handling a ride.
+
+The application should never send a normal new ride to:
+
+```text
+busy
+offline
+suspended
+inactive
+```
+
+drivers.
+
+---
+
+# 13. DRIVER LOCATION
+
+When a driver is online/available, the driver's application periodically sends:
+
+```text
+latitude
+longitude
+timestamp
+```
+
+to KaryRide.
+
+The database stores:
+
+```text
+current_latitude
+current_longitude
+last_location_update
+```
+
+The system should consider a driver "location-valid" only if the last update isn't too old.
+
+For example:
+
+```text
+last update recent
++
+driver available
++
+not suspended
++
+active account
+=
+eligible
+```
+
+The exact timeout should be configurable later.
+
+---
+
+# 14. DRIVER ASSIGNMENT
+
+This is the core dispatch mechanism.
+
+Client:
+
+```text
+requests ride
+```
+
+KaryRide:
+
+```text
+find eligible drivers
+```
+
+Criteria include:
+
+1. correct company/category
+2. available
+3. active
+4. not suspended
+5. valid recent location
+6. compatible vehicle
+7. within acceptable distance
+
+Then calculate proximity.
+
+Conceptually:
+
+```text
+client pickup
+       ↓
+available drivers
+       ↓
+distance calculation
+       ↓
+nearest eligible drivers
+       ↓
+dispatch request
+```
+
+---
+
+# 15. DRIVER DISPATCH MODEL
+
+For V1, use a **controlled dispatch system**, not complicated infrastructure.
+
+A practical flow:
+
+```text
+Ride pending
+     ↓
+Find nearby eligible drivers
+     ↓
+Offer ride
+     ↓
+Driver accepts
+     ↓
+Ride becomes accepted
+     ↓
+Other offers become invalid
+```
+
+The critical operation must be atomic.
+
+If two drivers attempt to accept simultaneously:
+
+```text
+Driver A accepts
+Driver B accepts
+```
+
+only one may win.
+
+The system verifies:
+
+```text
+ride.status = pending
+AND driver still eligible
+```
+
+before assigning.
+
+The first successful transaction wins.
+
+---
+
+# 16. DRIVER ACCEPTANCE
+
+When Driver A accepts:
+
+```text
+rides.driver_id = Driver A
+rides.vehicle_id = Driver A's current vehicle
+rides.status = accepted
+rides.accepted_at = NOW()
+```
+
+Driver becomes:
+
+```text
+busy
+```
+
+The client receives:
+
+```text
+Driver found
+```
+
+with:
+
+* driver name
+* vehicle
+* plate
+* category
+* estimated arrival
+* current location
+
+---
+
+# 17. RIDE REQUEST
+
+Client first chooses:
+
+```text
+Pickup
+Destination
+```
+
+The application obtains coordinates.
+
+Both address and coordinates are stored.
+
+This is important because GPS coordinates alone are not enough for human-readable records.
+
+The ride stores:
+
+```text
+pickup_address
+pickup_latitude
+pickup_longitude
+
+destination_address
+destination_latitude
+destination_longitude
+```
+
+
+
+---
+
+# 18. CURRENT LOCATION
+
+For a "ride now" booking:
+
+```text
+Client opens booking
+       ↓
+Browser/device requests location
+       ↓
+GPS coordinates
+       ↓
+Reverse geocoding
+       ↓
+Pickup address
+```
+
+But the user must still be able to manually adjust the pickup location.
+
+This is especially important in areas where GPS/address data isn't perfect.
+
+---
+
+# 19. DESTINATION
+
+Destination can be selected through:
+
+* search
+* map
+* saved location
+* manually entered address
+
+The final destination coordinates are stored with the ride.
+
+---
+
+# 20. DISTANCE CALCULATION
+
+KaryRide calculates estimated route distance.
+
+Conceptually:
+
+```text
+Pickup
+  ↓
+Routing service
+  ↓
+Distance
+  +
+Estimated duration
+```
+
+Store:
+
+```text
+estimated_distance_km
+estimated_duration_min
+```
+
+Do not blindly use straight-line distance as the final fare distance when a proper route distance is available.
+
+---
+
+# 21. PRICE CALCULATION
+
+Pricing comes from:
+
+```text
+pricing_plans
+```
+
+The plan contains:
+
+```text
+base_fare
+price_per_km
+min_fare
+advance_booking_fee
+```
+
+The basic formula is:
+
+```text
+base fare
++
+(distance × price per km)
+=
+calculated fare
+```
+
+Then:
+
+```text
+if calculated fare < minimum fare
+    total = minimum fare
+else
+    total = calculated fare
+```
+
+Conceptually:
+
+```text
+Fare =
+MAX(
+    min_fare,
+    base_fare + distance_km × price_per_km
+)
+```
+
+This pricing logic is already described in the schema documentation. 
+
+---
+
+# 22. PRICE SNAPSHOT
+
+This is extremely important.
+
+When the ride is created, copy the pricing result into:
+
+```text
+rides.base_fare
+rides.distance_fare
+rides.discount_amount
+rides.total_amount
+```
+
+The ride then owns its historical price.
+
+Suppose:
+
+```text
+Today = 800 BIF/km
+```
+
+and tomorrow:
+
+```text
+1000 BIF/km
+```
+
+Yesterday's ride remains based on:
+
+```text
+800 BIF/km
+```
+
+It must not be recalculated from the current pricing plan.
+
+---
+
+# 23. ADVANCE BOOKING
+
+Client can select:
+
+```text
+Ride now
+```
+
+or:
+
+```text
+Schedule ride
+```
+
+For scheduled:
+
+```text
+booking_type = advance
+scheduled_datetime = selected date/time
+```
+
+The company must have:
+
+```text
+accepts_advance_booking = 1
+```
+
+otherwise scheduled booking isn't allowed.
+
+If an advance booking fee exists:
+
+```text
+fare + advance_booking_fee
+```
+
+is included in the calculation.
+
+---
+
+# 24. PROMOTIONS
+
+Company creates:
+
+```text
+promo_code
+promo_title
+promo_type
+discount_value
+valid_from
+valid_until
+```
+
+Types:
+
+```text
+percentage
+fixed_amount
+loyalty_rides
+```
+
+
+
+Before applying a promotion, KaryRide checks:
+
+```text
+Does promotion exist?
+↓
+Does it belong to this company?
+↓
+Is active?
+↓
+Is current date valid?
+↓
+Does client satisfy requirements?
+↓
+Apply discount
+```
+
+---
+
+# 25. LOYALTY PROMOTIONS
+
+For:
+
+```text
+loyalty_rides
+```
+
+the system calculates the client's qualifying completed rides for that company.
+
+Conceptually:
+
+```text
+COUNT(rides)
+WHERE
+client_id = X
+AND company_id = Y
+AND status = completed
+```
+
+No separate loyalty table is necessary for V1.
+
+---
+
+# 26. DISCOUNT SAFETY
+
+Discount cannot produce a negative fare.
+
+For example:
+
+```text
+Original = 2,000
+Discount = 3,000
+```
+
+Result:
+
+```text
+0
+```
+
+not:
+
+```text -1,000
+```
+
+Application logic should enforce:
+
+```text
+discount <= payable amount
+```
+
+---
+
+# 27. RIDE LIFECYCLE
+
+The canonical ride lifecycle is:
+
+```text
+PENDING
+   ↓
+ACCEPTED
+   ↓
+DRIVER_ARRIVED
+   ↓
+IN_PROGRESS
+   ↓
+DESTINATION_REACHED
+   ↓
+COMPLETED
+```
+
+Or:
+
+```text
+PENDING
+   ↓
+CANCELLED
+```
+
+at an appropriate cancellation point.
+
+The database stores timestamps for these milestones. 
+
+---
+
+# 28. PENDING
+
+Meaning:
+
+> Ride has been requested but no driver has successfully accepted it.
+
+Client sees:
+
+```text
+Finding a driver...
+```
+
+The dispatch system works in the background.
+
+---
+
+# 29. ACCEPTED
+
+A driver successfully accepts.
+
+System:
+
+```text
+assign driver
+assign vehicle
+change driver → busy
+change ride → accepted
+record accepted_at
+notify client
+```
+
+---
+
+# 30. DRIVER ARRIVED
+
+Driver reaches pickup.
+
+Driver confirms:
+
+```text
+Arrived
+```
+
+System:
+
+```text
+status = driver_arrived
+arrived_at = NOW()
+```
+
+Client sees:
+
+```text
+Your driver has arrived.
+```
+
+---
+
+# 31. IN PROGRESS
+
+After the passenger enters the vehicle, driver starts the ride.
+
+System:
+
+```text
+status = in_progress
+started_at = NOW()
+```
+
+GPS tracking continues.
+
+---
+
+# 32. DESTINATION REACHED
+
+Driver indicates arrival.
+
+System:
+
+```text
+status = destination_reached
+destination_reached_at = NOW()
+```
+
+Then ride can be completed.
+
+---
+
+# 33. COMPLETED
+
+Once the ride finishes:
+
+```text
+status = completed
+completed_at = NOW()
+```
+
+The system determines the final distance if actual route data is available:
+
+```text
+actual_distance_km
+```
+
+and possibly:
+
+```text
+actual_duration_min
+```
+
+---
+
+# 34. PAYMENT
+
+Payment is deliberately separated from ride status.
+
+Ride:
+
+```text
+completed
+```
+
+doesn't necessarily mean:
+
+```text
+paid
+```
+
+Invoice:
+
+```text
+unpaid
+```
+
+may become:
+
+```text
+paid
+```
+
+later.
+
+This separation is correct.
+
+---
+
+# 35. PAYMENT METHODS
+
+V1 supports the schema's payment concepts:
+
+```text
+cash
+ecocash_manual
+lumicash_manual
+card
+mobile_money_pending
+```
+
+The architecture should allow actual payment integrations later without redesigning the ride system.
+
+---
+
+# 36. CASH PAYMENT
+
+For cash:
+
+```text
+Ride completed
+      ↓
+Invoice generated
+      ↓
+Client pays driver
+      ↓
+Payment confirmed
+      ↓
+invoice.payment_status = paid
+```
+
+`paid_at` records when it was confirmed.
+
+---
+
+# 37. MANUAL MOBILE MONEY
+
+For manual Mobile Money:
+
+```text
+Client pays externally
+      ↓
+Provides payment reference
+      ↓
+Company/authorized user verifies
+      ↓
+Invoice becomes paid
+```
+
+The application must not automatically mark a manual transaction as paid merely because the client typed a reference.
+
+---
+
+# 38. FUTURE MOBILE MONEY API
+
+When direct Ecocash/Lumicash integration is added:
+
+```text
+KaryRide
+   ↓
+Payment provider
+   ↓
+Transaction
+   ↓
+Provider callback/webhook
+   ↓
+Verify transaction
+   ↓
+Mark invoice paid
+```
+
+The ride itself remains separate from payment.
+
+---
+
+# 39. INVOICE
+
+One completed ride can have one invoice.
+
+The invoice contains:
+
+```text
+invoice_number
+payment_reference
+qr_code_token
+amount_bif
+payment_method
+payment_status
+paid_at
+```
+
+The invoice amount is a snapshot.
+
+It should not change simply because company pricing changes later.
+
+---
+
+# 40. QR CODE
+
+`qr_code_token` is not itself the entire invoice.
+
+It is a secure identifier/token used to generate or verify the QR.
+
+The QR can lead to a KaryRide verification page.
+
+Conceptually:
+
+```text
+QR
+ ↓
+secure token
+ ↓
+KaryRide verification
+ ↓
+invoice/ride validity
+```
+
+Don't expose internal database IDs unnecessarily.
+
+---
+
+# 41. REVIEWS
+
+After completion/payment, the client can rate the trip.
+
+One ride:
+
+```text
+ONE review
+```
+
+The review contains two independent ratings:
+
+```text
+Driver rating
+Company rating
+```
+
+Each:
+
+```text
+1–5
+```
+
+This is already enforced by the schema. 
+
+---
+
+# 42. DRIVER RATING
+
+Client evaluates:
+
+* professionalism
+* behavior
+* punctuality
+* safety
+* service
+
+stored as:
+
+```text
+driver_rating
+driver_comment
+```
+
+---
+
+# 43. COMPANY RATING
+
+Client evaluates:
+
+* service quality
+* vehicle quality
+* overall company experience
+
+stored as:
+
+```text
+company_rating
+company_comment
+```
+
+---
+
+# 44. COMPANY CLIENT RESTRICTIONS
+
+A company can restrict a client.
+
+Example:
+
+```text
+Client X
+     ↓
+Company A restriction
+```
+
+Client may still use:
+
+```text
+Company B
+Company C
+```
+
+unless globally banned by KaryRide.
+
+This distinction is fundamental.
+
+
+
+---
+
+# 45. RESTRICTION CHECK
+
+Before allowing a booking:
+
+```text
+Is user globally banned?
+     ↓ yes → reject
+
+Is user restricted by selected company?
+     ↓ yes → reject
+
+Otherwise
+     ↓
+continue booking
+```
+
+---
+
+# 46. DOCUMENT MANAGEMENT
+
+Documents can belong to:
+
+```text
+company
+driver
+vehicle
+```
+
+Examples:
+
+```text
+company:
+NIF / RC
+
+driver:
+driving license
+ID
+
+vehicle:
+insurance
+registration
+```
+
+Documents have:
+
+```text
+pending
+verified
+rejected
+```
+
+status.
+
+The system can therefore prevent operational activation when required documents are not verified.
+
+---
+
+# 47. DOCUMENT APPROVAL LOGIC
+
+Example driver:
+
+```text
+Driver created
+       ↓
+Documents uploaded
+       ↓
+Pending verification
+       ↓
+Admin/company authorized reviewer checks
+       ↓
+Verified
+       ↓
+Driver becomes operational
+```
+
+A rejected document should contain the reason.
+
+---
+
+# 48. COMPANY APPROVAL
+
+Company status:
+
+```text
+pending
+approved
+rejected
+suspended
+inactive
+```
+
+Only an approved company should be operational.
+
+Conceptually:
+
+```text
+pending
+   ↓
+review
+   ├── rejected
+   └── approved
+             ↓
+          operating
+```
+
+Suspension temporarily blocks operation.
+
+Inactive represents non-operational state.
+
+---
+
+# 49. SYSTEM SETTINGS
+
+The Super Admin controls platform-wide values.
+
+Examples:
+
+```text
+platform_commission_percent
+default_currency
+default_language
+support_phone
+```
+
+These should not be hardcoded throughout PHP.
+
+Application logic retrieves them centrally when needed.
+
+---
+
+# 50. PLATFORM COMMISSION
+
+If KaryRide charges a commission:
+
+```text
+ride total
+     ↓
+platform commission %
+     ↓
+platform share
+     ↓
+company share
+```
+
+The current schema stores the platform commission configuration in `system_settings`.
+
+For example:
+
+```text
+5%
+```
+
+The actual financial calculation should be performed at the appropriate transaction/reporting stage.
+
+---
+
+# 51. IMPORTANT FINANCIAL RULE
+
+Never calculate historical company revenue using today's commission setting.
+
+If the platform commission changes:
+
+```text
+5% → 7%
+```
+
+old rides must not suddenly become 7%.
+
+Therefore, when the financial/accounting side becomes more advanced, the transaction should snapshot the applicable financial values.
+
+For V1 reporting, the application can calculate from the ride/payment records while preserving historical ride pricing.
+
+---
+
+# 52. CLIENT DASHBOARD
+
+Client sees:
+
+```text
+Home
+Book Ride
+Current Ride
+Ride History
+Invoices
+Promotions
+Profile
+Language
+```
+
+The home screen should prioritize:
+
+```text
+Where are you going?
+```
+
+rather than overwhelming the client with administration.
+
+---
+
+# 53. CLIENT BOOKING UX
+
+Ideal flow:
+
+```text
+HOME
+ ↓
+Pickup
+ ↓
+Destination
+ ↓
+Choose transport category/company
+ ↓
+See estimated price
+ ↓
+Apply promotion
+ ↓
+Confirm
+ ↓
+Finding driver
+ ↓
+Driver accepted
+ ↓
+Track driver
+ ↓
+Ride
+ ↓
+Completion
+ ↓
+Payment
+ ↓
+Invoice
+ ↓
+Rating
+```
+
+This is the heart of KaryRide.
+
+---
+
+# 54. COMPANY DASHBOARD
+
+Company dashboard should show operational information first.
+
+Example:
+
+```text
+Today's rides
+Active rides
+Available drivers
+Busy drivers
+Vehicles
+Revenue
+Completed rides
+Cancelled rides
+Average rating
+```
+
+Then navigation to:
+
+```text
+Drivers
+Vehicles
+Pricing
+Promotions
+Clients
+Rides
+Documents
+Reports
+```
+
+---
+
+# 55. DRIVER DASHBOARD
+
+Driver should have a much simpler interface.
+
+```text
+ONLINE / OFFLINE
+       ↓
+Available
+       ↓
+Ride request
+       ↓
+Accept / Reject
+       ↓
+Navigate to pickup
+       ↓
+Arrived
+       ↓
+Start ride
+       ↓
+Destination
+       ↓
+Complete
+```
+
+Driver should not see unnecessary company administration.
+
+---
+
+# 56. SUPER ADMIN DASHBOARD
+
+Super Admin gets the global view.
+
+```text
+Total companies
+Active companies
+Pending companies
+Total clients
+Total drivers
+Total vehicles
+Today's rides
+Completed rides
+Cancelled rides
+Platform revenue/commission
+```
+
+Management:
+
+```text
+Companies
+Users
+Drivers
+Documents
+Categories
+System settings
+Reports
+```
+
+---
+
+# 57. NOTIFICATIONS
+
+KaryRide needs notifications for important events.
+
+Client:
+
+```text
+Driver found
+Driver arriving
+Driver arrived
+Ride started
+Ride completed
+Payment confirmed
+```
+
+Driver:
+
+```text
+New ride request
+Ride cancelled
+Client changed/cancelled request
+```
+
+Company:
+
+```text
+New ride
+Driver unavailable
+Important operational alerts
+```
+
+Super Admin:
+
+```text
+Company requiring review
+Document requiring verification
+Platform alerts
+```
+
+V1 can implement notifications through the application UI and polling; a sophisticated push infrastructure can come later.
+
+---
+
+# 58. REAL-TIME COMMUNICATION
+
+For V1, we don't need to build the system around WebSockets.
+
+Polling can handle:
+
+```text
+driver location
+ride status
+new ride request
+```
+
+The frontend periodically asks PHP:
+
+```text
+What's the current state?
+```
+
+This is much simpler for the initial KaryRide implementation.
+
+---
+
+# 59. LOCATION TRACKING DURING RIDE
+
+When a driver is on an active ride:
+
+```text
+Driver GPS
+   ↓
+PHP endpoint
+   ↓
+drivers.current_latitude
+drivers.current_longitude
+last_location_update
+```
+
+Client periodically retrieves it.
+
+The map shows:
+
+```text
+Driver position
+Pickup
+Destination
+```
+
+The driver doesn't need to constantly reload the entire page.
+
+---
+
+# 60. DRIVER ELIGIBILITY
+
+A driver can receive a ride only when:
+
+```text
+user.is_active = 1
+AND
+user.is_banned_globally = 0
+AND
+driver.is_suspended = 0
+AND
+driver.driver_status = available
+AND
+company.status = approved
+AND
+vehicle exists
+AND
+vehicle.is_active = 1
+AND
+location is sufficiently recent
+```
+
+Plus:
+
+```text
+category compatible
+```
+
+---
+
+# 61. COMPANY ELIGIBILITY
+
+A company can accept new rides only if:
+
+```text
+company.status = approved
+```
+
+and operationally:
+
+```text
+company has eligible vehicles/drivers
+```
+
+If no driver exists, the company doesn't magically receive a ride.
+
+---
+
+# 62. RIDE CANCELLATION
+
+Cancellation must record:
+
+```text
+cancelled_by
+cancellation_reason
+cancelled_at
+```
+
+Possible actors:
+
+```text
+client
+driver
+company
+system
+```
+
+This provides accountability.
+
+---
+
+# 63. CLIENT CANCELLATION
+
+Client can cancel under allowed conditions.
+
+Example:
+
+```text
+pending → cancelled
+```
+
+Potentially:
+
+```text
+accepted → cancelled
+```
+
+depending on KaryRide's cancellation policy.
+
+The application should determine whether a cancellation fee applies.
+
+---
+
+# 64. DRIVER CANCELLATION
+
+Driver may cancel under controlled circumstances.
+
+The system should record:
+
+```text
+cancelled_by = driver
+reason
+```
+
+and then:
+
+```text
+driver → available
+```
+
+if appropriate.
+
+The dispatch system can search for another driver if the ride is still eligible for reassignment.
+
+---
+
+# 65. SYSTEM CANCELLATION
+
+System can cancel when:
+
+* no driver accepts
+* scheduled booking expires
+* company becomes unavailable
+* technical timeout
+* invalid booking state
+* administrative intervention
+
+Reason must be stored.
+
+---
+
+# 66. RIDE STATE PROTECTION
+
+The application must prevent invalid transitions.
+
+For example:
+
+```text
+completed → pending
+```
+
+must never happen.
+
+Likewise:
+
+```text
+cancelled → in_progress
+```
+
+must never happen.
+
+The backend must validate the current state before every transition.
+
+---
+
+# 67. CONCURRENCY
+
+This is extremely important.
+
+Imagine:
+
+```text
+Driver A clicks ACCEPT
+Driver B clicks ACCEPT
+```
+
+at almost exactly the same moment.
+
+The backend must ensure only one succeeds.
+
+The database transaction should verify:
+
+```text
+status = pending
+```
+
+then lock/update the ride.
+
+Winner:
+
+```text
+accepted
+```
+
+Loser:
+
+```text
+Ride no longer available
+```
+
+This is a backend rule, not a JavaScript rule.
+
+---
+
+# 68. SECURITY PRINCIPLE
+
+Never trust:
+
+```text
+company_id
+driver_id
+vehicle_id
+client_id
+price
+total_amount
+role
+```
+
+coming from the browser.
+
+The server calculates/validates them.
+
+For example, a malicious client could send:
+
+```text
+total_amount = 100
+```
+
+instead of:
+
+```text
+total_amount = 15,000
+```
+
+PHP must ignore the submitted price and calculate it from trusted database data.
+
+---
+
+# 69. CLIENT PRICE SECURITY
+
+The frontend can show:
+
+```text
+Estimated: 8,500 BIF
+```
+
+but the backend recalculates/validates the price when creating the ride.
+
+Frontend = presentation.
+
+Backend = authority.
+
+---
+
+# 70. COMPANY DATA SECURITY
+
+A request like:
+
+```text
+/company/vehicles.php?id=15
+```
+
+must not simply execute:
+
+```sql
+SELECT * FROM vehicles WHERE id = 15
+```
+
+It must verify company ownership.
+
+Conceptually:
+
+```sql
+WHERE id = 15
+AND company_id = CURRENT_COMPANY_ID
+```
+
+Same principle for:
+
+* drivers
+* vehicles
+* rides
+* promotions
+* pricing
+* restrictions
+* documents
+
+---
+
+# 71. CLIENT DATA SECURITY
+
+A client should only access their own:
+
+```text
+rides
+invoices
+reviews
+profile
+```
+
+Never:
+
+```text
+another client's ride
+```
+
+---
+
+# 72. DRIVER DATA SECURITY
+
+Driver should only access:
+
+* their own profile
+* their own current ride
+* ride requests assigned/offered to them
+* operational location functions
+
+They should not be able to manipulate another driver.
+
+---
+
+# 73. PASSWORD SECURITY
+
+Passwords are never stored directly.
+
+Only:
+
+```text
+password_hash
+```
+
+is stored.
+
+PHP should use:
+
+```text
+password_hash()
+password_verify()
+```
+
+with secure password hashing.
+
+---
+
+# 74. SESSION SECURITY
+
+After login:
+
+```text
+session_start()
+```
+
+and store only necessary identity information.
+
+For example:
+
+```text
+user_id
+role
+```
+
+Company context should be derived securely from the authenticated user's relationships rather than blindly accepting a browser-supplied company ID.
+
+Sessions should be regenerated after authentication.
+
+Logout destroys the authenticated session.
+
+---
+
+# 75. CSRF
+
+All state-changing web forms should use CSRF protection.
+
+Especially:
+
+```text
+create company
+add driver
+add vehicle
+change pricing
+create promotion
+accept ride
+cancel ride
+start ride
+complete ride
+mark payment
+approve document
+suspend user
+```
+
+---
+
+# 76. INPUT VALIDATION
+
+Every backend endpoint validates:
+
+* required fields
+* data types
+* lengths
+* allowed enums
+* numeric ranges
+* coordinates
+* dates
+* ownership
+* permissions
+
+Client-side validation is only for UX.
+
+Server-side validation is mandatory.
+
+---
+
+# 77. DATABASE TRANSACTIONS
+
+Use database transactions when multiple changes must happen together.
+
+Example driver acceptance:
+
+```text
+BEGIN
+
+verify ride pending
+verify driver available
+verify vehicle valid
+
+assign driver
+assign vehicle
+change ride status
+change driver status
+
+COMMIT
+```
+
+If anything fails:
+
+```text
+ROLLBACK
+```
+
+---
+
+# 78. RIDE CREATION TRANSACTION
+
+When creating a ride:
+
+```text
+BEGIN
+
+validate client
+validate company
+validate category
+validate restriction
+validate pricing
+validate promotion
+calculate distance
+calculate fare
+create ride
+
+COMMIT
+```
+
+If something fails:
+
+```text
+ROLLBACK
+```
+
+---
+
+# 79. COMPLETION LOGIC
+
+When completing:
+
+```text
+BEGIN
+
+verify driver owns ride
+verify ride is in correct state
+calculate/store final metrics
+set completed_at
+set status completed
+set driver available
+generate invoice
+
+COMMIT
+```
+
+The invoice creation should not happen halfway through an unsuccessful ride completion.
+
+---
+
+# 80. INVOICE GENERATION
+
+After successful completion:
+
+```text
+ride
+ ↓
+invoice number generated
+ ↓
+payment reference generated
+ ↓
+secure QR token generated
+ ↓
+invoice created
+```
+
+Each identifier must be unique.
+
+---
+
+# 81. REPORTING
+
+KaryRide should calculate reports from transactional data.
+
+### Client
+
+* total rides
+* completed rides
+* cancelled rides
+* total spent
+* favorite companies
+
+### Company
+
+* rides
+* revenue
+* completed
+* cancelled
+* driver performance
+* vehicle usage
+* average rating
+* promotion usage
+
+### Super Admin
+
+* total companies
+* platform rides
+* platform commission
+* active users
+* growth
+* company performance
+* geographic activity
+
+---
+
+# 82. COMPANY RANKING
+
+Company rating can be calculated from:
+
+```text
+AVG(company_rating)
+```
+
+from reviews.
+
+Driver ranking:
+
+```text
+AVG(driver_rating)
+```
+
+The application should also consider review count when creating rankings so that one five-star review doesn't automatically make a company more trusted than a company with thousands of high ratings.
+
+---
+
+# 83. DRIVER PERFORMANCE
+
+Useful metrics:
+
+```text
+acceptance rate
+cancellation rate
+completed rides
+average rating
+average response time
+average arrival time
+```
+
+Some of these require event/history data later.
+
+For V1, core metrics can be calculated from the current schema.
+
+---
+
+# 84. VEHICLE PERFORMANCE
+
+Company can see:
+
+```text
+vehicle
+number of rides
+distance
+revenue-associated rides
+active/inactive
+driver assignment
+```
+
+Historical rides remain associated even if the vehicle is later deactivated.
+
+---
+
+# 85. DATA DELETION PHILOSOPHY
+
+Do **not casually delete historical operational data**.
+
+For example:
+
+```text
+Vehicle used in 300 rides
+```
+
+should not be physically deleted in a way that destroys historical integrity.
+
+For V1, `is_active` is enough for many operational entities.
+
+Deactivate rather than destroy historical records.
+
+---
+
+# 86. POLYMORPHIC DOCUMENTS
+
+`uploaded_documents` uses:
+
+```text
+entity_type
+entity_id
+```
+
+This means the database cannot enforce a traditional FK to three possible parent tables.
+
+Therefore the PHP application must validate:
+
+```text
+entity_type = driver
+→ entity_id must be an existing driver
+```
+
+and similarly for:
+
+```text
+company
+vehicle
+```
+
+This is an intentional pragmatic design for V1. 
+
+---
+
+# 87. PUBLIC VS PRIVATE INFORMATION
+
+Some company information can be public:
+
+```text
+company name
+logo
+categories
+pricing
+rating
+service availability
+```
+
+Private:
+
+```text
+company internal permissions
+financial administration
+staff management
+documents
+internal restrictions
+```
+
+Driver public information during an active ride:
+
+```text
+first name
+avatar
+rating
+vehicle
+plate
+location
+```
+
+Never expose unnecessary personal information.
+
+---
+
+# 88. SEARCH
+
+Search should respect role and company scope.
+
+Company searching drivers:
+
+```text
+WHERE company_id = own_company
+```
+
+Client searching companies:
+
+```text
+approved companies only
+```
+
+Super Admin:
+
+```text
+global search
+```
+
+---
+
+# 89. MAP LOGIC
+
+The map layer is primarily a presentation/service layer.
+
+KaryRide stores:
+
+```text
+latitude
+longitude
+address
+```
+
+Mapping/routing functionality can use an external map/routing provider.
+
+The database should remain provider-independent.
+
+---
+
+# 90. ESTIMATED ETA
+
+ETA can be calculated using:
+
+```text
+driver current position
++
+pickup position
++
+routing service
+```
+
+When driver location updates:
+
+```text
+recalculate ETA
+```
+
+Client sees approximate:
+
+```text
+5 min
+```
+
+rather than assuming the original estimate remains correct.
+
+---
+
+# 91. OFFLINE / BAD NETWORK
+
+KaryRide must expect poor connectivity.
+
+If driver loses connection:
+
+```text
+last_location_update
+```
+
+remains available.
+
+The client can display:
+
+```text
+Location last updated recently
+```
+
+instead of pretending the driver is moving in real time.
+
+If the driver remains disconnected too long:
+
+```text
+not eligible for new rides
+```
+
+depending on system rules.
+
+---
+
+# 92. MOBILE RESPONSIVENESS
+
+The application must be designed mobile-first but also work on:
+
+```text
+small phones
+large phones
+tablets
+laptops
+desktop
+```
+
+The same backend should serve all interfaces.
+
+Tailwind handles responsive UI.
+
+The important screens should not depend on desktop-only interactions.
+
+---
+
+# 93. UI PRINCIPLE
+
+KaryRide should feel like a **transport application**, not an administrative database.
+
+Client:
+
+```text
+simple
+fast
+map-focused
+action-focused
+```
+
+Driver:
+
+```text
+large actions
+minimal distractions
+clear status
+```
+
+Company:
+
+```text
+dashboard-oriented
+data-rich
+efficient
+```
+
+Super Admin:
+
+```text
+management-oriented
+analytics
+controls
+```
+
+---
+
+# 94. ERROR HANDLING
+
+Every backend operation should return predictable results.
+
+Conceptually:
+
+```text
+success
+error
+validation_error
+unauthorized
+forbidden
+not_found
+conflict
+server_error
+```
+
+Examples:
+
+```text
+Ride already accepted
+Driver unavailable
+Company suspended
+Invalid promotion
+Client restricted
+Vehicle unavailable
+```
+
+Errors should be translated according to the user's language.
+
+---
+
+# 95. LOGGING
+
+Even though we're not adding a dedicated audit table to the V1 schema yet, the application should internally log important technical errors.
+
+Especially:
+
+```text
+database errors
+authentication failures
+payment failures
+dispatch failures
+unexpected state transitions
+```
+
+A proper audit system can be added later.
+
+---
+
+# 96. IMPORTANT DATABASE RULES
+
+The database guarantees important structural relationships.
+
+For example:
+
+```text
+Driver Company A
+        ↓
+Vehicle Company A
+```
+
+The composite foreign key prevents the wrong company vehicle assignment.
+
+Similarly:
+
+```text
+Ride Company A
+      ↓
+Driver Company A
+```
+
+and:
+
+```text
+Ride Company A
+      ↓
+Vehicle Company A
+```
+
+are protected.
+
+This is one of the strongest aspects of the current schema.
+
+---
+
+# 97. APPLICATION RULES VS DATABASE RULES
+
+Not everything belongs in SQL.
+
+### Database should protect:
+
+* foreign keys
+* uniqueness
+* required fields
+* rating range
+* company relationships
+* basic structural integrity
+
+### PHP should enforce:
+
+* permissions
+* business workflows
+* booking rules
+* dispatch logic
+* promotion eligibility
+* company/global category rules
+* cancellation policy
+* payment verification
+* role restrictions
+
+### JavaScript should handle:
+
+* interface
+* maps
+* live UI updates
+* validation feedback
+* polling
+* location acquisition
+
+Never put critical security/business rules only in JavaScript.
+
+---
+
+# 98. CORE KARYRIDE DATA FLOW
+
+The entire platform can be understood as:
+
+```text
+USER
+ ↓
+AUTHENTICATION
+ ↓
+ROLE
+ ↓
+COMPANY CONTEXT
+ ↓
+PERMISSIONS
+ ↓
+SERVICE CONFIGURATION
+ ↓
+CATEGORY
+ ↓
+PRICING
+ ↓
+CLIENT REQUEST
+ ↓
+LOCATION
+ ↓
+ROUTE
+ ↓
+FARE
+ ↓
+RIDE
+ ↓
+DISPATCH
+ ↓
+DRIVER
+ ↓
+VEHICLE
+ ↓
+GPS
+ ↓
+TRIP
+ ↓
+COMPLETION
+ ↓
+INVOICE
+ ↓
+PAYMENT
+ ↓
+REVIEW
+ ↓
+REPORTING
+```
+
+---
+
+# 99. COMPLETE CLIENT FLOW
+
+```text
+Open KaryRide
+      ↓
+Login/Register
+      ↓
+Home
+      ↓
+Choose pickup
+      ↓
+Choose destination
+      ↓
+Get route
+      ↓
+Select available transport/company
+      ↓
+Calculate fare
+      ↓
+Promotion
+      ↓
+Confirm
+      ↓
+Ride created
+      ↓
+Searching driver
+      ↓
+Driver accepts
+      ↓
+Driver approaches
+      ↓
+Driver arrived
+      ↓
+Ride starts
+      ↓
+Track trip
+      ↓
+Destination reached
+      ↓
+Ride completed
+      ↓
+Payment
+      ↓
+Invoice
+      ↓
+Review
+      ↓
+History
+```
+
+---
+
+# 100. COMPLETE COMPANY FLOW
+
+```text
+SUPER ADMIN
+     ↓
+Company created
+     ↓
+Owner credentials
+     ↓
+Owner login
+     ↓
+Company setup
+     ↓
+Categories
+     ↓
+Pricing
+     ↓
+Vehicles
+     ↓
+Drivers
+     ↓
+Documents
+     ↓
+Operational approval
+     ↓
+Drivers online
+     ↓
+Clients request rides
+     ↓
+Company drivers receive requests
+     ↓
+Trips completed
+     ↓
+Payments
+     ↓
+Company statistics
+```
+
+---
+
+# 101. COMPLETE DRIVER FLOW
+
+```text
+Login
+ ↓
+Driver dashboard
+ ↓
+Go online
+ ↓
+Location permission
+ ↓
+GPS updates
+ ↓
+Available
+ ↓
+Ride offer
+ ↓
+Accept
+ ↓
+Navigate to pickup
+ ↓
+Arrived
+ ↓
+Passenger enters
+ ↓
+Start
+ ↓
+Navigate
+ ↓
+Destination
+ ↓
+Complete
+ ↓
+Payment/invoice
+ ↓
+Driver becomes available
+```
+
+---
+
+# 102. COMPLETE SUPER ADMIN FLOW
+
+```text
+Login
+ ↓
+Global dashboard
+ ↓
+Companies
+ ↓
+Create/manage company
+ ↓
+Owner credentials
+ ↓
+Review company
+ ↓
+Approve/reject/suspend
+ ↓
+Manage global categories
+ ↓
+Manage users
+ ↓
+Verify documents
+ ↓
+Monitor platform
+ ↓
+Configure system
+ ↓
+Reports
+```
+
+---
+
+# 103. WHAT HAPPENS WHEN A COMPANY IS SUSPENDED?
+
+Existing historical rides remain.
+
+But:
+
+```text
+new bookings → blocked
+drivers → cannot receive new rides
+company dashboard → restricted operational actions
+```
+
+The system should handle active rides carefully rather than abruptly corrupting them.
+
+Historical:
+
+```text
+completed rides
+invoices
+reviews
+```
+
+remain intact.
+
+---
+
+# 104. WHAT HAPPENS WHEN A DRIVER IS SUSPENDED?
+
+Driver:
+
+```text
+is_suspended = 1
+```
+
+Then:
+
+```text
+cannot receive new rides
+```
+
+If they are currently on a ride, the system should not simply delete the ride association.
+
+The active ride requires controlled administrative handling.
+
+---
+
+# 105. WHAT HAPPENS WHEN A VEHICLE IS DEACTIVATED?
+
+Vehicle:
+
+```text
+is_active = 0
+```
+
+Then:
+
+```text
+cannot be assigned to new rides
+```
+
+Historical rides remain valid.
+
+---
+
+# 106. WHAT HAPPENS WHEN PRICES CHANGE?
+
+Nothing changes for existing rides.
+
+New booking:
+
+```text
+new pricing
+```
+
+Existing ride:
+
+```text
+stored snapshot
+```
+
+This is exactly why the pricing values are stored directly on `rides`. 
+
+---
+
+# 107. WHAT HAPPENS WHEN A PROMOTION EXPIRES?
+
+It cannot be applied to new bookings.
+
+Historical rides that already used it remain unchanged.
+
+The ride keeps:
+
+```text
+promo_id
+discount_amount
+```
+
+and therefore preserves what happened historically.
+
+---
+
+# 108. WHAT HAPPENS WHEN A CLIENT IS RESTRICTED?
+
+Future bookings with that company:
+
+```text
+blocked
+```
+
+Other companies:
+
+```text
+still available
+```
+
+unless globally banned.
+
+---
+
+# 109. WHAT HAPPENS WHEN NO DRIVER IS FOUND?
+
+The ride remains:
+
+```text
+pending
+```
+
+while the dispatch process searches according to configured timeout/retry rules.
+
+Eventually:
+
+```text
+cancelled
+cancelled_by = system
+```
+
+with a meaningful reason.
+
+The client gets a clear message.
+
+---
+
+# 110. WHAT HAPPENS WHEN DRIVER CANCELS?
+
+Possible:
+
+```text
+Driver cancellation
+      ↓
+driver becomes available
+      ↓
+ride returns to dispatch
+```
+
+if policy permits.
+
+Otherwise:
+
+```text
+ride cancelled
+```
+
+The exact business policy should be configurable in application logic.
+
+---
+
+# 111. WHAT HAPPENS WHEN CLIENT CANCELS AFTER ACCEPTANCE?
+
+The system evaluates:
+
+```text
+current ride state
++
+cancellation policy
+```
+
+Then either:
+
+```text
+allow cancellation
+```
+
+or:
+
+```text
+reject cancellation / apply applicable fee
+```
+
+The important part is that the cancellation is recorded.
+
+---
+
+# 112. WHAT HAPPENS IF THE APP CLOSES?
+
+The ride remains in the database.
+
+When the user returns:
+
+```text
+load current active ride
+```
+
+from the backend.
+
+The application should never rely on browser memory as the source of ride state.
+
+---
+
+# 113. WHAT HAPPENS IF DRIVER PHONE RESTARTS?
+
+Driver logs back in.
+
+Backend retrieves:
+
+```text
+current active ride
+```
+
+and restores the appropriate screen.
+
+The server remains the source of truth.
+
+---
+
+# 114. WHAT HAPPENS IF CLIENT PHONE RESTARTS?
+
+Same principle.
+
+Client logs back in:
+
+```text
+GET active ride
+```
+
+and sees the current state.
+
+---
+
+# 115. SOURCE OF TRUTH
+
+This principle should govern the whole project:
+
+> **The MySQL database + backend are the source of truth.**
+
+Not:
+
+```text
+JavaScript
+browser
+localStorage
+URL parameters
+```
+
+Those are interfaces.
+
+---
+
+# 116. V1 TECHNOLOGY RESPONSIBILITIES
+
+Your chosen V1 stack:
+
+```text
+HTML
+CSS
+JavaScript
+Tailwind CSS
+PHP
+MySQL
+```
+
+### HTML
+
+Structure.
+
+### Tailwind/CSS
+
+Responsive interface.
+
+### JavaScript
+
+Interactive behavior, maps, location, polling, UI updates.
+
+### PHP
+
+Authentication, business logic, authorization, pricing, dispatch, database operations.
+
+### MySQL
+
+Persistent data + structural integrity.
+
+---
+
+# 117. APPLICATION ARCHITECTURE PRINCIPLE
+
+Because you specifically don't want the project unnecessarily spread into dozens of tiny files:
+
+**Don't create a giant `functions.php` containing the entire application.**
+
+At the same time, don't create:
+
+```text
+one file for every tiny function
+```
+
+Instead, each major application area should own its related logic.
+
+For example:
+
+```text
+client booking page
+    → booking-related processing
+
+driver page
+    → driver operational processing
+
+company vehicles page
+    → vehicle management logic
+
+company pricing page
+    → pricing management logic
+
+admin companies page
+    → company administration logic
+```
+
+Shared infrastructure can remain genuinely shared.
+
+The objective is:
+
+> **compact structure without turning one file into an unmaintainable monster.**
+
+---
+
+# 118. API/REQUEST LOGIC
+
+AJAX/fetch endpoints should be organized by actual responsibility.
+
+Not:
+
+```text
+api.php?do=everything
+```
+
+The endpoint receiving a request must:
+
+```text
+authenticate
+↓
+authorize
+↓
+validate
+↓
+execute
+↓
+return structured response
+```
+
+A client request must never be able to call a company-only operation merely by changing a URL parameter.
+
+---
+
+# 119. PERFORMANCE
+
+The most frequently accessed queries should be optimized.
+
+Especially:
+
+```text
+available drivers
+active rides
+company rides
+client history
+driver active ride
+company dashboard statistics
+```
+
+The existing schema already includes useful indexes for roles, statuses, companies, GPS and ride activity.
+
+---
+
+# 120. GPS PERFORMANCE
+
+Do not make the driver update location every fraction of a second.
+
+That creates unnecessary:
+
+```text
+HTTP requests
+database writes
+bandwidth
+battery consumption
+```
+
+Use sensible periodic updates and more frequent updates only when operationally necessary.
+
+---
+
+# 121. DATABASE INDEXING
+
+Important query patterns include:
+
+```text
+company_id + status
+company_id + active
+driver_id + status
+client_id
+scheduled_datetime
+driver GPS
+promotion validity
+payment status
+```
+
+The current schema includes indexes around many of these.
+
+---
+
+# 122. FUTURE `ride_events`
+
+We don't need it to make V1 functional.
+
+But later, a:
+
+```text
+ride_events
+```
+
+table could record:
+
+```text
+requested
+offered
+accepted
+arrived
+started
+destination_reached
+completed
+cancelled
+```
+
+with:
+
+```text
+timestamp
+actor
+location
+metadata
+```
+
+That would provide a detailed audit trail.
+
+For V1, the milestone timestamps already provide the basic lifecycle history.
+
+---
+
+# 123. FUTURE AUDIT LOG
+
+Later, KaryRide can add:
+
+```text
+audit_logs
+```
+
+to answer:
+
+```text
+Who approved this company?
+Who changed this price?
+Who suspended this driver?
+Who verified this document?
+Who changed this setting?
+```
+
+This is valuable for a mature platform but doesn't need to block V1.
+
+---
+
+# 124. FUTURE PAYMENT TRANSACTIONS
+
+Direct payment integrations may eventually require a dedicated payment transaction structure containing:
+
+```text
+provider
+provider_transaction_id
+request
+response
+status
+amount
+currency
+timestamps
+```
+
+That should come when actual API integration begins.
+
+---
+
+# 125. FUTURE REAL-TIME INFRASTRUCTURE
+
+V1:
+
+```text
+PHP + polling
+```
+
+Later:
+
+```text
+WebSockets / real-time messaging
+```
+
+can replace polling without changing the conceptual ride lifecycle.
+
+---
+
+# 126. FUTURE MULTI-PROVINCE SCALE
+
+The database already accommodates Burundi administrative locations:
+
+```text
+province
+commune
+zone
+quartier
+```
+
+KaryRide can therefore expand beyond Bujumbura without changing the fundamental company model.
+
+---
+
+# 127. THE MOST IMPORTANT BUSINESS RULE
+
+A company owns its operational ecosystem:
+
+```text
+COMPANY
+ ├── staff
+ ├── drivers
+ ├── vehicles
+ ├── pricing
+ ├── promotions
+ ├── restrictions
+ └── rides
+```
+
+KaryRide owns the platform ecosystem:
+
+```text
+KARYRIDE
+ ├── companies
+ ├── global users
+ ├── global categories
+ ├── platform settings
+ ├── platform administration
+ └── platform-wide controls
+```
+
+The two scopes must never be confused.
+
+---
+
+# 128. THE FINAL ARCHITECTURAL MODEL
+
+```text
+                         KARYRIDE
+                            │
+                ┌───────────┴───────────┐
+                │                       │
+            PLATFORM                 USERS
+                │                       │
+          SUPER ADMIN          ┌────────┼────────┐
+                │               │        │        │
+          SYSTEM SETTINGS    CLIENT   DRIVER   COMPANY
+          GLOBAL CATEGORIES            │        │
+                                       │    OWNER/MANAGER/
+                                       │    EMPLOYEE
+                                       │        │
+                                       │    STAFF
+                                       │        │
+                                       └────┬────┘
+                                            │
+                                         COMPANY
+                                            │
+                    ┌───────────────┬───────┼───────────────┐
+                    │               │       │               │
+                 VEHICLES        PRICING  PROMOTIONS     RESTRICTIONS
+                    │
+                 CATEGORY
+                    │
+                 DRIVER
+                    │
+                 LOCATION
+                    │
+                    └──────────────┐
+                                   │
+                                BOOKING
+                                   │
+                                  RIDE
+                                   │
+                    ┌──────────────┼──────────────┐
+                    │              │              │
+                 DRIVER          VEHICLE       CATEGORY
+                    │
+                  TRIP
+                    │
+                COMPLETION
+                    │
+                 INVOICE
+                    │
+                 PAYMENT
+                    │
+                 REVIEW
+                    │
+             ┌──────┴──────┐
+             │             │
+          DRIVER        COMPANY
+           RATING         RATING
+```
+
+## Bottom line
+
+**This is the theory I would use as the contract for building KaryRide V1.**
+
+The database we've just finalized is the **data foundation**. The application logic above is the **behavioral foundation**.
+
+And importantly, we don't need to keep redesigning the architecture every time we discover a possible future feature. V1 should be built around these rules first:
+
+**Secure authentication → company isolation → fleet management → pricing → booking → dispatch → GPS → ride lifecycle → payment → invoice → reviews → administration.**
+
+Everything else should fit around that core.  
+
+
+
+
+
+
+@echo off
+setlocal
+
+echo ============================================
+echo Creating KaryRide V1 directory structure...
+echo ============================================
+echo.
+
+REM ============================================
+REM ROOT
+REM ============================================
+mkdir karyride
+cd karyride
+
+REM ============================================
+REM CONFIG
+REM ============================================
+mkdir config
+echo. > config\database.php
+echo. > config\app.php
+
+REM ============================================
+REM PAGES
+REM ============================================
+mkdir pages
+
+echo. > pages\login.php
+echo. > pages\register.php
+echo. > pages\forgot-password.php
+
+echo. > pages\admin.php
+echo. > pages\company.php
+echo. > pages\driver.php
+echo. > pages\client.php
+
+REM ============================================
+REM API
+REM ============================================
+mkdir api
+
+echo. > api\auth.php
+echo. > api\ride.php
+echo. > api\dispatch.php
+echo. > api\driver.php
+echo. > api\vehicle.php
+echo. > api\company.php
+echo. > api\pricing.php
+echo. > api\promotion.php
+echo. > api\review.php
+echo. > api\location.php
+echo. > api\payment.php
+echo. > api\settings.php
+
+REM ============================================
+REM TRANSLATIONS
+REM ============================================
+mkdir translations
+
+echo. > translations\rn.php
+echo. > translations\en.php
+
+REM ============================================
+REM ASSETS
+REM ============================================
+mkdir assets
+mkdir assets\images
+mkdir assets\uploads
+
+REM ============================================
+REM DATABASE MIGRATIONS
+REM ============================================
+mkdir migrations
+echo. > migrations\001_initial.sql
+
+REM ============================================
+REM LOGS
+REM ============================================
+mkdir logs
+echo. > logs\errors.log
+
+REM ============================================
+REM ROOT FILES
+REM ============================================
+echo. > index.php
+echo. > .htaccess
+echo. > .env
+echo. > composer.json
+
+REM ============================================
+REM DISPLAY RESULT
+REM ============================================
+echo.
+echo ============================================
+echo KaryRide V1 structure created successfully!
+echo ============================================
+echo.
+
+echo Directory tree:
+echo.
+tree /f
+
+echo.
+echo ============================================
+echo KaryRide V1 ready.
+echo ============================================
+pause
